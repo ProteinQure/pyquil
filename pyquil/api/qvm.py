@@ -152,6 +152,11 @@ programs run on this QVM.
 
         if self.noise_model is not None:
             compiled_program = self.compiler.compile(quil_program)
+            # if you want to do it asynchronous comment line above
+            # and uncomment next 3 lines (requires whitelisting)
+            #job_id = self.compiler.compile_async(quil_program)
+            #job = self.compiler.wait_for_job(job_id)
+            #compiled_program = job.compiled_quil()
             quil_program = apply_noise_model(compiled_program, self.noise_model)
 
         payload = {"type": TYPE_MULTISHOT,
@@ -218,6 +223,11 @@ programs run on this QVM.
 
         if self.noise_model is not None:
             compiled_program = self.compiler.compile(quil_program)
+            # if you want to do it asynchronous comment line above
+            # and uncomment next 3 lines (requires whitelisting)
+            #job_id = self.compiler.compile_async(quil_program)
+            #job = self.compiler.wait_for_job(job_id)
+            #compiled_program = job.compiled_quil()
             quil_program = apply_noise_model(compiled_program, self.noise_model)
 
         payload = {"type": TYPE_MULTISHOT_MEASURE,
