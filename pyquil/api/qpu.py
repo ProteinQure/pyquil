@@ -14,9 +14,11 @@
 #    limitations under the License.
 ##############################################################################
 import warnings
+import time
 
 from six import integer_types
 
+from pyquil.api import errors
 from pyquil.api.job import Job
 from pyquil.device import Device
 from pyquil.gates import MEASURE
@@ -184,7 +186,13 @@ with the former, the device.
         be executed. See https://go.rigetti.com/connections for reasons to use this method.
         """
         payload = self._run_payload(quil_program, classical_addresses, trials, needs_compilation=needs_compilation, isa=isa)
-        response = post_json(self.session, self.async_endpoint + "/job", self._wrap_program(payload))
+        response = None
+        while response is None:
+            try:
+                response = post_json(self.session, self.async_endpoint + "/job", self._wrap_program(payload))
+            except (errors.DeviceOfflineError, errors.DeviceRetuningError):
+                time.sleep(10)
+
         return get_job_id(response)
 
     def _run_payload(self, quil_program, classical_addresses, trials, needs_compilation, isa):
