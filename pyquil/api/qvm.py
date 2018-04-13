@@ -151,7 +151,9 @@ programs run on this QVM.
             raise TypeError("ISA cannot be None if program needs compilation preprocessing.")
 
         if self.noise_model is not None:
-            compiled_program = self.compiler.compile(quil_program)
+            job_id = self.compiler.compile_async(quil_program)
+            job = self.compiler.wait_for_job(job_id)
+            compiled_program = job.compiled_quil()
             quil_program = apply_noise_model(compiled_program, self.noise_model)
 
         payload = {"type": TYPE_MULTISHOT,
