@@ -21,7 +21,7 @@ import numpy as np
 from six import integer_types, string_types
 
 from pyquil.parameters import Expression, _contained_parameters, format_parameter
-from pyquil.quilatom import Qubit, Addr, Label, unpack_qubit
+from pyquil.quilatom import Qubit, Addr, Label, unpack_qubit, QubitPlaceholder, LabelPlaceholder
 
 
 class AbstractInstruction(object):
@@ -51,6 +51,30 @@ RESERVED_WORDS = ['DEFGATE', 'DEFCIRCUIT', 'MEASURE',
                   'FALSE', 'TRUE', 'NOT', 'AND', 'OR', 'MOVE', 'EXCHANGE']
 
 
+def _extract_qubit_index(qubit, index=True):
+    if (not index) or isinstance(qubit, QubitPlaceholder):
+        return qubit
+    return qubit.index
+
+
+def _format_qubit_str(qubit):
+    if isinstance(qubit, QubitPlaceholder):
+        return "{%s}" % str(qubit)
+    return str(qubit)
+
+
+def _format_qubits_str(qubits):
+    return " ".join([_format_qubit_str(qubit) for qubit in qubits])
+
+
+def _format_qubits_out(qubits):
+    return " ".join([qubit.out() for qubit in qubits])
+
+
+def _format_params(params):
+    return "(" + ",".join(format_parameter(param) for param in params) + ")"
+
+
 class Gate(AbstractInstruction):
     """
     This is the pyQuil object for a quantum gate instruction.
@@ -69,27 +93,32 @@ class Gate(AbstractInstruction):
         if not isinstance(qubits, list) or not qubits:
             raise TypeError("Gate arguments must be a non-empty list")
         for qubit in qubits:
-            if not isinstance(qubit, Qubit):
+            if not isinstance(qubit, (Qubit, QubitPlaceholder)):
                 raise TypeError("Gate arguments must all be Qubits")
 
         self.name = name
         self.params = params
         self.qubits = qubits
 
+    def get_qubits(self, indices=True):
+        return {_extract_qubit_index(q, indices) for q in self.qubits}
+
     def out(self):
-        def format_params(params):
-            return "(" + ",".join(map(format_parameter, params)) + ")"
-
-        def format_qubits(qubits):
-            return " ".join([str(qubit) for qubit in qubits])
-
         if self.params:
-            return "{}{} {}".format(self.name, format_params(self.params), format_qubits(self.qubits))
+            return "{}{} {}".format(self.name, _format_params(self.params),
+                                    _format_qubits_out(self.qubits))
         else:
-            return "{} {}".format(self.name, format_qubits(self.qubits))
+            return "{} {}".format(self.name, _format_qubits_out(self.qubits))
 
     def __repr__(self):
-        return "<Gate " + self.out() + ">"
+        return "<Gate " + str(self) + ">"
+
+    def __str__(self):
+        if self.params:
+            return "{}{} {}".format(self.name, _format_params(self.params),
+                                    _format_qubits_str(self.qubits))
+        else:
+            return "{} {}".format(self.name, _format_qubits_str(self.qubits))
 
 
 class Measurement(AbstractInstruction):
@@ -98,7 +127,7 @@ class Measurement(AbstractInstruction):
     """
 
     def __init__(self, qubit, classical_reg=None):
-        if not isinstance(qubit, Qubit):
+        if not isinstance(qubit, (Qubit, QubitPlaceholder)):
             raise TypeError("qubit should be a Qubit")
         if classical_reg and not isinstance(classical_reg, Addr):
             raise TypeError("classical_reg should be None or an Addr instance")
@@ -108,9 +137,18 @@ class Measurement(AbstractInstruction):
 
     def out(self):
         if self.classical_reg:
-            return "MEASURE {} {}".format(self.qubit, self.classical_reg)
+            return "MEASURE {} {}".format(self.qubit.out(), self.classical_reg.out())
         else:
-            return "MEASURE {}".format(self.qubit)
+            return "MEASURE {}".format(self.qubit.out())
+
+    def __str__(self):
+        if self.classical_reg:
+            return "MEASURE {} {}".format(_format_qubit_str(self.qubit), str(self.classical_reg))
+        else:
+            return "MEASURE {}".format(_format_qubit_str(self.qubit))
+
+    def get_qubits(self, indices=True):
+        return {_extract_qubit_index(self.qubit, indices)}
 
 
 class DefGate(AbstractInstruction):
@@ -222,7 +260,7 @@ class JumpTarget(AbstractInstruction):
     """
 
     def __init__(self, label):
-        if not isinstance(label, Label):
+        if not isinstance(label, (Label, LabelPlaceholder)):
             raise TypeError("label must be a Label")
         self.label = label
 
@@ -239,7 +277,7 @@ class JumpConditional(AbstractInstruction):
     """
 
     def __init__(self, target, condition):
-        if not isinstance(target, Label):
+        if not isinstance(target, (Label, LabelPlaceholder)):
             raise TypeError("target should be a Label")
         if not isinstance(condition, Addr):
             raise TypeError("condition should be an Addr")
@@ -296,7 +334,7 @@ class Reset(SimpleInstruction):
 
 class Nop(SimpleInstruction):
     """
-    The RESET instruction.
+    The NOP instruction.
     """
     op = "NOP"
 
@@ -366,7 +404,7 @@ class Jump(AbstractInstruction):
     """
 
     def __init__(self, target):
-        if not isinstance(target, Label):
+        if not isinstance(target, (Label, LabelPlaceholder)):
             raise TypeError("target should be a Label")
         self.target = target
 
@@ -391,9 +429,9 @@ class Pragma(AbstractInstruction):
         if not isinstance(args, (tuple, list)):
             raise TypeError("Pragma arguments must be a list: {}".format(args))
         for a in args:
-            if not (isinstance(a, string_types) or isinstance(a, integer_types)):
+            if not (isinstance(a, string_types) or isinstance(a, integer_types) or
+                    isinstance(a, QubitPlaceholder) or isinstance(a, Qubit)):
                 raise TypeError("Pragma arguments must be strings or integers: {}".format(a))
-
         if not isinstance(freeform_string, string_types):
             raise TypeError("The freeform string argument must be a string: {}".format(
                 freeform_string))
@@ -428,4 +466,4 @@ class RawInstr(AbstractInstruction):
         return self.instr
 
     def __repr__(self):
-        return '<RawInstr>'
+        return '<RawInstr {}>'.format(self.instr)

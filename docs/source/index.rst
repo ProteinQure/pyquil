@@ -51,9 +51,13 @@ Contents
 
    intro
    start
+   basics
+   advanced_usage
+   exercises
    qvm
    qpu
    compiler
+   qubit-placeholder
    noise
    modules
    changes

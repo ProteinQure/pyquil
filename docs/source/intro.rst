@@ -276,7 +276,7 @@ multiple qubits to grow exponentially in size, as their vectors are tensored tog
 
     p = Program()
     for x in range(10):
-        p.inst(I(x))
+        p += I(x)
     wavefunction = quantum_simulator.wavefunction(p)
     print("The quantum state is of dimension:", len(wavefunction.amplitudes)  )
 
@@ -402,15 +402,15 @@ called the Pauli operators:
 .. parsed-literal::
 
     X|0> =  (1+0j)|1>
-    The outcome probabilities are {'1': 1.0, '0': 0.0}
+    The outcome probabilities are {'0': 0.0, '1': 1.0}
     This looks like a bit flip.
 
     Y|0> =  1j|1>
-    The outcome probabilities are {'1': 1.0, '0': 0.0}
+    The outcome probabilities are {'0': 0.0, '1': 1.0}
     This also looks like a bit flip.
 
     Z|0> =  (1+0j)|0>
-    The outcome probabilities are {'1': 0.0, '0': 1.0}
+    The outcome probabilities are {'0': 1.0, '1': 0.0}
     This state looks unchanged.
 
 The Pauli matrices have a visual interpretation: they perform 180-degree rotations of
@@ -824,7 +824,7 @@ Next Steps
 ----------
 
 We hope that you have enjoyed your whirlwind tour of quantum computing.
-You are now ready to check out the `Installation and Getting Started <getting_started.html>`_ guide!
+You are now ready to check out the `Installation and Getting Started <start.html>`_ guide!
 
 If you would like to learn more, Nielsen and Chuang's
 *Quantum Computation and Quantum Information* is a particularly excellent resource for
