@@ -16,17 +16,11 @@
 
 from pyquil.api.job import Job
 from pyquil.device import Device, ISA, Specs
-from pyquil.quil import Program
+from pyquil.quil import Program, address_qubits
 from pyquil.parser import parse_program
 from pyquil.paulis import PauliTerm
 from ._base_connection import TYPE_MULTISHOT, get_job_id, get_session, \
-    wait_for_job, post_json, get_json
-
-
-class CompilerConnectionError(ValueError):
-    def __init__(self):
-        super().__init__("You must provide at least either device or isa_source when constructing the compiler"
-                         " connection to use this method")
+    wait_for_job, post_json, get_json, ASYNC_ENDPOINT, SYNC_ENDPOINT
 
 
 class CompilerConnection(object):
@@ -34,8 +28,8 @@ class CompilerConnection(object):
     Represents a connection to the Quil compiler.
     """
 
-    def __init__(self, device=None, sync_endpoint='https://api.rigetti.com',
-                 async_endpoint='https://job.rigetti.com/beta', api_key=None,
+    def __init__(self, device=None, sync_endpoint=SYNC_ENDPOINT,
+                 async_endpoint=ASYNC_ENDPOINT, api_key=None,
                  user_id=None, use_queue=False, ping_time=0.1, status_time=2,
                  isa_source=None, specs_source=None):
         """
@@ -94,19 +88,19 @@ class CompilerConnection(object):
         elif specs_source is not None:
             raise TypeError('specs_source argument must be a Specs.')
 
-    def compile(self, quil_program):
+    def compile(self, quil_program, isa=None):
         """
         Sends a Quil program to the Forest compiler and returns the resulting
         compiled Program.
 
         :param Program quil_program: Quil program to be compiled.
+        :param ISA isa: An optional ISA to target. This takes precedence over the ``device`` or
+            ``isa_source`` arguments to this object's constructor. If this is not specified,
+            you must have provided one of the aforementioned constructor arguments.
         :returns: The compiled Program object.
         :rtype: Program
         """
-        if self.specs is None and self.custom_isa is None:
-            raise CompilerConnectionError()
-
-        payload = self._compile_payload(quil_program)
+        payload = self._compile_payload(quil_program, isa)
         if self.use_queue:
             response = post_json(self.session, self.async_endpoint + "/job",
                                  {"machine": "QUILC", "program": payload})
@@ -117,25 +111,30 @@ class CompilerConnection(object):
                                  payload)
             return parse_program(response.json()['compiled-quil'])
 
-    def compile_async(self, quil_program):
+    def compile_async(self, quil_program, isa=None):
         """
         Similar to compile except that it returns a job id and doesn't wait for
         the program to be executed.
         See https://go.rigetti.com/connections for reasons to use this method.
         """
-        if self.specs is None and self.custom_isa is None:
-            raise CompilerConnectionError()
-
-        payload = self._compile_payload(quil_program)
+        payload = self._compile_payload(quil_program, isa)
         response = post_json(self.session, self.async_endpoint + "/job",
                              {"machine": "QUILC", "program": payload})
         return get_job_id(response)
 
-    def _compile_payload(self, quil_program):
+    def _compile_payload(self, quil_program, isa):
+        if isa is None and self.custom_isa is None:
+            raise ValueError("You must specify an ISA for the compiler to target. You can provide "
+                             "a `device` or `isa_source` argument when constructing the "
+                             "`CompilerConnection` object or pass an `isa` argument to the "
+                             "compile methods.")
+        if isa is None:
+            isa = self.custom_isa
+
         payload = {"type": TYPE_MULTISHOT,
                    "qubits": [],
                    "uncompiled-quil": quil_program.out(),
-                   "target-device": {"isa": self.custom_isa.to_dict()}}
+                   "target-device": {"isa": isa.to_dict()}}
 
         if self.specs is not None:
             payload["target-device"]["specs"] = self.specs.to_dict()
@@ -167,77 +166,104 @@ class CompilerConnection(object):
                             (2 seconds)
         :return: Completed Job
         """
+
         def get_job_fn():
             return self.get_job(job_id)
+
         return wait_for_job(get_job_fn,
                             ping_time if ping_time else self.ping_time,
                             status_time if status_time else self.status_time)
 
     def _clifford_application_payload(self, clifford, pauli):
         """
-        Prepares a JSON payload for conjugating a Pauli by a Clifford - see apply_clifford_to_pauli.
+        Prepares a JSON payload for conjugating a Pauli by a Clifford.
+
+         See :py:func:`apply_clifford_to_pauli`.
 
         :param Program clifford: A Program that consists only of Clifford operations.
         :param PauliTerm pauli: A PauliTerm to be acted on by clifford via conjugation.
         :return: The JSON payload, with keys "clifford" and "pauli".
         """
         indices_and_terms = zip(*list(pauli.operations_as_set()))
-        payload = {"clifford": clifford.out(),
-                   "pauli": list(indices_and_terms)}
-        return payload
+        return {"clifford": clifford.out(),
+                "pauli": list(indices_and_terms)}
 
     def apply_clifford_to_pauli(self, clifford, pauli_in):
         """
-        Given a circuit that consists only of elements of the Clifford group, return its action on a PauliTerm.
+        Given a circuit that consists only of elements of the Clifford group,
+        return its action on a PauliTerm.
 
-        In particular, for Clifford C, and Pauli P, this returns the PauliTerm representing PCP^{\dagger}.
+        In particular, for Clifford C, and Pauli P, this returns the PauliTerm
+        representing PCP^{\dagger}.
 
         :param Program clifford: A Program that consists only of Clifford operations.
         :param PauliTerm pauli_in: A PauliTerm to be acted on by clifford via conjugation.
         :return: A PauliTerm corresponding to pauli_in * clifford * pauli_in^{\dagger}
         """
         payload = self._clifford_application_payload(clifford, pauli_in)
-        phase_factor, paulis = post_json(self.session, self.sync_endpoint + "/apply-clifford", payload).json()
+        phase_factor, paulis = post_json(self.session, self.sync_endpoint + "/apply-clifford",
+                                         payload).json()
         pauli_out = PauliTerm("I", 0, 1.j ** phase_factor)
         clifford_qubits = clifford.get_qubits()
         pauli_qubits = pauli_in.get_qubits()
         all_qubits = sorted(set(pauli_qubits).union(set(clifford_qubits)))
-        # The returned pauli will have specified its value on all_qubits, sorted by index. This is maximal set of
-        # qubits that can be affected by this conjugation.
+        # The returned pauli will have specified its value on all_qubits, sorted by index.
+        #  This is maximal set of qubits that can be affected by this conjugation.
         for i, pauli in enumerate(paulis):
             pauli_out *= PauliTerm(pauli, all_qubits[i])
         return pauli_out * pauli_in.coefficient
 
-    def _rb_sequence_payload(self, depth, qubits, gateset):
+    def _rb_sequence_payload(self, depth, gateset):
         """
-        Prepares a JSON payload for generating a randomized benchmarking sequence - see generate_rb_sequence.
+        Prepares a JSON payload for generating a randomized benchmarking sequence.
+
+        See :py:func:`generate_rb_sequence`.
 
         :param int depth: The number of cliffords per rb sequences to generate.
-        :param int qubits: The number of qubits to perform rb on.
-        :param list gateset: A list of Gate objects that make up the gateset to decompose the Cliffords into.
+        :param list gateset: A list of Gate objects that make up the gateset to decompose
+            the Cliffords into.
         :return: The JSON payload, with keys "depth", "qubits", and "gateset".
         """
+        # Support QubitPlaceholders: we temporarily index to arbitrary integers.
+        # `generate_rb_sequence` handles mapping back to the original gateset gates.
+        gateset_as_program = address_qubits(sum(gateset, Program()))
+        n_qubits = len(gateset_as_program.get_qubits())
+        gateset_for_api = gateset_as_program.out().splitlines()
         payload = {"depth": depth,
-                   "qubits": qubits,
-                   "gateset": [gate.out() for gate in gateset]}
+                   "qubits": n_qubits,
+                   "gateset": gateset_for_api}
         return payload
 
-    def generate_rb_sequence(self, depth, qubits, gateset):
+    def generate_rb_sequence(self, depth, gateset):
         """
-        Construct a randomized benchmarking experiment on the given qubits, decomposing into gateset.
+        Construct a randomized benchmarking experiment on the given qubits, decomposing into
+        gateset.
 
-        The JSON payload that is parsed is a list of lists of indices, or Nones. In the former case, they are the index
-         of the gate in the gateset.
-        :param int depth: The number of Clifford gates to include in the randomized benchmarking experiement.
-        :param int qubits: The number of qubits to generate a randomized benchmarking sequence for.
-        :param list gateset: A list of pyquil gates to decompose the Clifford elements into.
+        The JSON payload that is parsed is a list of lists of indices, or Nones. In the
+        former case, they are the index of the gate in the gateset.
+
+        :param int depth: The number of Clifford gates to include in the randomized benchmarking
+         experiment. This is different than the number of gates in the resulting experiment.
+        :param list gateset: A list of pyquil gates to decompose the Clifford elements into. These
+         must generate the clifford group on the qubits of interest. e.g. for one qubit
+         [RZ(np.pi/2), RX(np.pi/2)].
+        :return: A list of pyquil programs. Each pyquil program is a circuit that represents an
+         element of the Clifford group. When these programs are composed, the resulting Program
+         will be the randomized benchmarking experiment of the desired depth. e.g. if the return
+         programs are called cliffords then `sum(cliffords, Program())` will give the randomized
+         benchmarking experiment, which will compose to the identity program.
         """
-        payload = self._rb_sequence_payload(depth, qubits, gateset)
+        depth = int(depth)  # needs to be jsonable, no np.int64 please!
+        payload = self._rb_sequence_payload(depth, gateset)
         response = post_json(self.session, self.sync_endpoint + "/rb", payload).json()
         programs = []
         for clifford in response:
             clifford_program = Program()
-            for index in clifford:
+            # Like below, we reversed the order because the API currently hands back the Clifford
+            # decomposition right-to-left.
+            for index in reversed(clifford):
                 clifford_program.inst(gateset[index])
             programs.append(clifford_program)
-        return programs
+        # The programs are returned in "textbook style" right-to-left order. To compose them into
+        #  the correct pyquil program, we reverse the order.
+        return list(reversed(programs))

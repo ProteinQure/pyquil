@@ -1,8 +1,7 @@
 from collections import OrderedDict
 
 import numpy as np
-import pytest
-from mock import Mock
+from unittest.mock import Mock
 
 from pyquil.api import QPUConnection
 from pyquil.gates import CZ, RZ, RX, I, H
@@ -52,8 +51,8 @@ def test_combine_kraus_maps():
 
 
 def test_damping_after_dephasing():
-    damping = damping_kraus_map()
-    dephasing = dephasing_kraus_map()
+    damping = damping_kraus_map(p=1 - np.exp(-.1))
+    dephasing = dephasing_kraus_map(p=.5 * (1 - np.exp(-.2)))
     ks_ref = combine_kraus_maps(damping, dephasing)
 
     ks_actual = damping_after_dephasing(10, 10, 1)
@@ -61,14 +60,14 @@ def test_damping_after_dephasing():
 
 
 def test_noise_helpers():
-    gates = RX(np.pi / 2)(0), RX(-np.pi / 2)(1), I(1), CZ(0, 1)
+    gates = RX(np.pi / 2, 0), RX(-np.pi / 2, 1), I(1), CZ(0, 1)
     prog = Program(*gates)
     inferred_gates = _get_program_gates(prog)
     assert set(inferred_gates) == set(gates)
 
 
 def test_decoherence_noise():
-    prog = Program(RX(np.pi / 2)(0), CZ(0, 1), RZ(np.pi)(0))
+    prog = Program(RX(np.pi / 2, 0), CZ(0, 1), RZ(np.pi, 0))
     gates = _get_program_gates(prog)
     m1 = _decoherence_noise_model(gates, T1=INFINITY, T2=INFINITY, ro_fidelity=1.)
 
@@ -198,7 +197,21 @@ def test_estimate_assignment_probs():
 
 
 def test_apply_noise_model():
-    p = Program(RX(np.pi / 2)(0), RX(np.pi / 2)(1), CZ(0, 1), RX(np.pi / 2)(1))
+    p = Program(RX(np.pi / 2, 0), RX(np.pi / 2, 1), CZ(0, 1), RX(np.pi / 2, 1))
+    noise_model = _decoherence_noise_model(_get_program_gates(p))
+    pnoisy = apply_noise_model(p, noise_model)
+    for i in pnoisy:
+        if isinstance(i, DefGate):
+            pass
+        elif isinstance(i, Pragma):
+            assert i.command in ['ADD-KRAUS', 'READOUT-POVM']
+        elif isinstance(i, Gate):
+            assert i.name in NO_NOISE or not i.params
+
+
+def test_apply_noise_model_perturbed_angles():
+    eps = 1e-15
+    p = Program(RX(np.pi / 2 + eps, 0), RX(np.pi / 2 - eps, 1), CZ(0, 1), RX(np.pi / 2 + eps, 1))
     noise_model = _decoherence_noise_model(_get_program_gates(p))
     pnoisy = apply_noise_model(p, noise_model)
     for i in pnoisy:

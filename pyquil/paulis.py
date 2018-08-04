@@ -21,8 +21,11 @@ from __future__ import division
 from itertools import product
 import numpy as np
 import copy
+
+from pyquil.quilatom import QubitPlaceholder
+
 from .quil import Program
-from .gates import H, RZ, RX, CNOT, X, PHASE, STANDARD_GATES
+from .gates import H, RZ, RX, CNOT, X, PHASE, QUANTUM_GATES
 from numbers import Number
 from collections import Sequence, OrderedDict, defaultdict
 import warnings
@@ -57,6 +60,11 @@ can't use np.isclose() for hashing terms though.
 """
 
 
+def _valid_qubit(index):
+    return ((isinstance(index, integer_types) and index >= 0) or
+            isinstance(index, QubitPlaceholder))
+
+
 class PauliTerm(object):
     """A term is a product of Pauli operators operating on different qubits.
     """
@@ -70,7 +78,7 @@ class PauliTerm(object):
         :param float coefficient: The coefficient multiplying the operator, e.g. 1.5 * Z_1
         """
         assert op in PAULI_OPS
-        assert isinstance(index, integer_types) and index >= 0
+        assert _valid_qubit(index)
 
         self._ops = OrderedDict()
         if op != "I":
@@ -158,7 +166,7 @@ class PauliTerm(object):
 
     @property
     def program(self):
-        return Program([STANDARD_GATES[gate](q) for q, gate in self])
+        return Program([QUANTUM_GATES[gate](q) for q, gate in self])
 
     def get_qubits(self):
         """Gets all the qubits that this PauliTerm operates on.
@@ -308,7 +316,7 @@ class PauliTerm(object):
         assert all([op[0] in PAULI_OPS for op in terms_list])
 
         indices = [op[1] for op in terms_list]
-        assert all([isinstance(index, integer_types) and index >= 0 for index in indices])
+        assert all(_valid_qubit(index) for index in indices)
 
         # this is because from_list doesn't call simplify in order to be more efficient.
         if len(set(indices)) != len(indices):
@@ -745,7 +753,7 @@ def exponential_map(term):
 
     :param PauliTerm term: Tests is a PauliTerm is the identity operator
     :returns: Program
-    :rtype: Program
+    :rtype: Function
     """
     if not np.isclose(np.imag(term.coefficient), 0.0):
         raise TypeError("PauliTerm coefficient must be real")
@@ -757,9 +765,9 @@ def exponential_map(term):
         prog = Program()
         if is_identity(term):
             prog.inst(X(0))
-            prog.inst(PHASE(-param * coeff)(0))
+            prog.inst(PHASE(-param * coeff, 0))
             prog.inst(X(0))
-            prog.inst(PHASE(-param * coeff)(0))
+            prog.inst(PHASE(-param * coeff, 0))
         else:
             prog += _exponentiate_general_case(term, param)
         return prog
@@ -817,8 +825,8 @@ def _exponentiate_general_case(pauli_term, param):
             change_to_original_basis.inst(H(index))
 
         elif 'Y' == op:
-            change_to_z_basis.inst(RX(np.pi / 2.0)(index))
-            change_to_original_basis.inst(RX(-np.pi / 2.0)(index))
+            change_to_z_basis.inst(RX(np.pi / 2.0, index))
+            change_to_original_basis.inst(RX(-np.pi / 2.0, index))
 
         elif 'I' == op:
             continue
@@ -832,7 +840,7 @@ def _exponentiate_general_case(pauli_term, param):
     # building rotation circuit
     quil_prog += change_to_z_basis
     quil_prog += cnot_seq
-    quil_prog.inst(RZ(2.0 * pauli_term.coefficient * param)(highest_target_index))
+    quil_prog.inst(RZ(2.0 * pauli_term.coefficient * param, highest_target_index))
     quil_prog += reverse_hack(cnot_seq)
     quil_prog += change_to_original_basis
 

@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ##############################################################################
-
+import re
 from math import pi
 
 import numpy as np
@@ -24,9 +24,12 @@ from pyquil.gates import I, X, Y, Z, H, T, S, RX, RY, RZ, CNOT, CCNOT, PHASE, CP
     CPHASE10, CPHASE, SWAP, CSWAP, ISWAP, PSWAP, MEASURE, HALT, WAIT, NOP, RESET, \
     TRUE, FALSE, NOT, AND, OR, MOVE, EXCHANGE
 from pyquil.parameters import Parameter, quil_sin, quil_cos
-from pyquil.quil import Program, merge_programs, shift_quantum_gates, \
-    get_classical_addresses_from_program
+from pyquil.paulis import exponential_map, sZ
+from pyquil.quil import Program, merge_programs, address_qubits, \
+    get_classical_addresses_from_program, Pragma
+from pyquil.quilatom import QubitPlaceholder
 from pyquil.quilbase import DefGate, Gate, Addr, Qubit, JumpWhen
+from pyquil.tests.utils import parse_equals
 
 
 def test_gate():
@@ -134,7 +137,9 @@ def test_iteration():
     program = Program(gate_list)
     for ii, instruction in enumerate(program):
         assert instruction == gate_list[ii]
-    gate_generator = (gate_list[ii] for ii in range(3))   # https://github.com/rigetticomputing/pyquil/issues/265
+
+    # https://github.com/rigetticomputing/pyquil/issues/265
+    gate_generator = (gate_list[ii] for ii in range(3))
     program = Program(gate_generator)
     for ii, instruction in enumerate(program):
         assert instruction == gate_list[ii]
@@ -238,8 +243,8 @@ def test_dagger():
                        H(0), CNOT(0, 1), CCNOT(0, 1, 2),
                        SWAP(0, 1), CSWAP(0, 1, 2))
     assert p.dagger().out() == 'CSWAP 0 1 2\nSWAP 0 1\n' \
-        'CCNOT 0 1 2\nCNOT 0 1\nH 0\n' \
-        'Z 0\nY 0\nX 0\nI 0\n'
+                               'CCNOT 0 1 2\nCNOT 0 1\nH 0\n' \
+                               'Z 0\nY 0\nX 0\nI 0\n'
 
     # these gates require negating a parameter
     p = Program().inst(PHASE(pi, 0), RX(pi, 0), RY(pi, 0),
@@ -275,6 +280,20 @@ def test_dagger():
     p = Program().defgate("G", G).inst(("G", 0))
     assert p.dagger(inv_dict=inv_dict).out() == 'J 0\n'
 
+    # defined parameterized gates cannot auto generate daggered version https://github.com/rigetticomputing/pyquil/issues/304
+    theta = Parameter('theta')
+    gparam_matrix = np.array([[quil_cos(theta / 2), -1j * quil_sin(theta / 2)],
+                             [-1j * quil_sin(theta / 2), quil_cos(theta / 2)]])
+    g_param_def = DefGate('GPARAM', gparam_matrix, [theta])
+    p = Program(g_param_def)
+    with pytest.raises(TypeError):
+        p.dagger()
+
+    # defined parameterized gates should passback parameters https://github.com/rigetticomputing/pyquil/issues/304
+    GPARAM = g_param_def.get_constructor()
+    p = Program(GPARAM(pi)(1, 2))
+    assert p.dagger().out() == 'GPARAM-INV(pi) 1 2\n'
+
 
 def test_construction_syntax():
     p = Program().inst(X(0), Y(1), Z(0)).measure(0, 1)
@@ -291,7 +310,7 @@ def test_singles():
 
 
 def test_rotations():
-    p = Program(RX(0.5)(0), RY(0.1)(1), RZ(1.4)(2))
+    p = Program(RX(0.5, 0), RY(0.1, 1), RZ(1.4, 2))
     assert p.out() == 'RX(0.5) 0\nRY(0.1) 1\nRZ(1.4) 2\n'
 
 
@@ -301,16 +320,16 @@ def test_controlled_gates():
 
 
 def test_phases():
-    p = Program(PHASE(np.pi)(1), CPHASE00(np.pi)(0, 1), CPHASE01(np.pi)(0, 1),
-                CPHASE10(np.pi)(0, 1),
-                CPHASE(np.pi)(0, 1))
+    p = Program(PHASE(np.pi, 1), CPHASE00(np.pi, 0, 1), CPHASE01(np.pi, 0, 1),
+                CPHASE10(np.pi, 0, 1),
+                CPHASE(np.pi, 0, 1))
     assert p.out() == 'PHASE(pi) 1\nCPHASE00(pi) 0 1\n' \
                       'CPHASE01(pi) 0 1\nCPHASE10(pi) 0 1\n' \
                       'CPHASE(pi) 0 1\n'
 
 
 def test_swaps():
-    p = Program(SWAP(0, 1), CSWAP(0, 1, 2), ISWAP(0, 1), PSWAP(np.pi)(0, 1))
+    p = Program(SWAP(0, 1), CSWAP(0, 1, 2), ISWAP(0, 1), PSWAP(np.pi, 0, 1))
     assert p.out() == 'SWAP 0 1\nCSWAP 0 1 2\nISWAP 0 1\nPSWAP(pi) 0 1\n'
 
 
@@ -362,10 +381,10 @@ def test_define_qft():
     def qft3(q0, q1, q2):
         p = Program()
         p.inst(H(q2),
-               CPHASE(pi / 2.0)(q1, q2),
+               CPHASE(pi / 2.0, q1, q2),
                H(1),
-               CPHASE(pi / 4.0)(q0, q2),
-               CPHASE(pi / 2.0)(q0, q1),
+               CPHASE(pi / 4.0, q0, q2),
+               CPHASE(pi / 2.0, q0, q1),
                H(q0),
                SWAP(q0, q2))
         return p
@@ -421,16 +440,98 @@ def test_alloc():
 
     p.inst(X(q3))  # X 4
 
+    with pytest.raises(RuntimeError) as e:
+        _ = p.out()
+    assert e.match(r'Qubit q\d+ has not been assigned an index')
+
+
+def test_alloc_2():
+    p = Program()
+
+    p.inst(H(0))  # H 0
+
+    q1 = p.alloc()  # q1 = 1
+    q2 = p.alloc()  # q2 = 3
+
+    p.inst(CNOT(q1, q2))  # CNOT 1 3
+
+    p.inst(H(2))
+
+    q3 = p.alloc()  # q3 = 4
+
+    p.inst(X(q3))  # X 4
+    with pytest.raises(ValueError) as e:
+        _ = address_qubits(p, {
+            q1: 1,
+            q2: 3,
+            q3: 4,
+        })
+
+    assert e.match('Your program mixes instantiated qubits with placeholders')
+
+
+def test_alloc_new():
+    p = Program()
+
+    q0 = QubitPlaceholder()
+    p.inst(H(q0))  # H 0
+
+    q1 = QubitPlaceholder()
+    q2 = QubitPlaceholder()
+
+    p.inst(CNOT(q1, q2))  # CNOT 1 3
+
+    qxxx = QubitPlaceholder()
+    p.inst(H(qxxx))
+
+    q3 = QubitPlaceholder()
+
+    p.inst(X(q3))  # X 4
+    p = address_qubits(p, {
+        q1: 1,
+        q2: 3,
+        q3: 4,
+        q0: 0,
+        qxxx: 2,
+    })
+
     assert p.out() == "H 0\n" \
                       "CNOT 1 3\n" \
                       "H 2\n" \
                       "X 4\n"
 
 
+def test_multiaddress():
+    p = Program()
+    q0, q1 = [QubitPlaceholder() for _ in range(2)]
+    p += exponential_map(sZ(q0) * sZ(q1))(0.5)
+
+    map1 = {q0: 0, q1: 1}
+    map2 = {q0: 9, q1: 10}
+
+    p1 = address_qubits(p, map1)
+
+    with pytest.raises(RuntimeError):
+        _ = p.out()  # make sure the original isn't affected
+
+    assert p1.out() == "CNOT 0 1\n" \
+                       "RZ(1.0) 1\n" \
+                       "CNOT 0 1\n"
+
+    p2 = address_qubits(p, map2)
+    assert p1.out() == "CNOT 0 1\n" \
+                       "RZ(1.0) 1\n" \
+                       "CNOT 0 1\n"
+    assert p2.out() == "CNOT 9 10\n" \
+                       "RZ(1.0) 10\n" \
+                       "CNOT 9 10\n"
+
+
 def test_multiple_instantiate():
     p = Program()
     q = p.alloc()
     p.inst(H(q))
+    p = address_qubits(p)
     assert p.out() == 'H 0\n'
     assert p.out() == 'H 0\n'
 
@@ -442,6 +543,7 @@ def test_reuse_alloc():
     p.inst(H(q1))
     p.inst(H(q2))
     p.inst(CNOT(q1, q2))
+    p = address_qubits(p)
     assert p.out() == 'H 0\nH 1\nCNOT 0 1\n'
 
 
@@ -451,18 +553,15 @@ def test_prog_merge():
     assert merge_programs([prog_0, prog_1]).out() == (prog_0 + prog_1).out()
 
 
-def test_quantum_gate_shift():
-    prog = Program(X(0), CNOT(0, 4), MEASURE(5, [5]))
-    assert shift_quantum_gates(prog, 5) == Program(X(5), CNOT(5, 9), MEASURE(5, [5]))
-
-
 def test_get_qubits():
     pq = Program(X(0), CNOT(0, 4), MEASURE(5, [5]))
     assert pq.get_qubits() == {0, 4, 5}
 
+    q = [QubitPlaceholder() for _ in range(6)]
+    pq = Program(X(q[0]), CNOT(q[0], q[4]), MEASURE(q[5], [5]))
     qq = pq.alloc()
-    pq.inst(Y(2), X(qq))
-    assert pq.get_qubits() == {0, 1, 2, 4, 5}  # this synthesizes the allocation
+    pq.inst(Y(q[2]), X(qq))
+    assert address_qubits(pq).get_qubits() == {0, 1, 2, 3, 4}
 
     qubit_index = 1
     p = Program(("H", qubit_index))
@@ -470,7 +569,20 @@ def test_get_qubits():
     q1 = p.alloc()
     q2 = p.alloc()
     p.inst(("CNOT", q1, q2))
-    assert p.get_qubits() == {qubit_index, 0, 2}
+    with pytest.raises(ValueError) as e:
+        _ = address_qubits(p).get_qubits()
+    assert e.match('Your program mixes instantiated qubits with placeholders')
+
+
+def test_get_qubit_placeholders():
+    qs = QubitPlaceholder.register(8)
+    pq = Program(X(qs[0]), CNOT(qs[0], qs[4]), MEASURE(qs[5], [5]))
+    assert pq.get_qubits() == {qs[i] for i in [0, 4, 5]}
+
+
+def test_get_qubits_not_as_indices():
+    pq = Program(X(0), CNOT(0, 4), MEASURE(5, [5]))
+    assert pq.get_qubits(indices=False) == {Qubit(i) for i in [0, 4, 5]}
 
 
 def test_eq():
@@ -478,6 +590,7 @@ def test_eq():
     q1 = p1.alloc()
     q2 = p1.alloc()
     p1.inst([H(q1), CNOT(q1, q2)])
+    p1 = address_qubits(p1)
 
     p2 = Program()
     p2.inst([H(0), CNOT(0, 1)])
@@ -616,7 +729,7 @@ def test_allocating_qubits_on_multiple_programs():
     qubit1 = q.alloc()
     q.inst(X(qubit1))
 
-    assert (p + q).out() == "X 0\nX 1\n"
+    assert address_qubits(p + q).out() == "X 0\nX 1\n"
 
 
 # https://github.com/rigetticomputing/pyquil/issues/163
@@ -638,7 +751,7 @@ def test_nesting_a_program_inside_itself():
 def test_inline_alloc():
     p = Program()
     p += H(p.alloc())
-    assert p.out() == "H 0\n"
+    assert address_qubits(p).out() == "H 0\n"
 
 
 # https://github.com/rigetticomputing/pyquil/issues/138
@@ -648,9 +761,64 @@ def test_defgate_integer_input():
     assert dg.out() == "DEFGATE TEST:\n    1, 0\n    0, 1\n"
 
 
+def test_out_vs_str():
+    qs = QubitPlaceholder.register(6)
+    pq = Program(X(qs[0]), CNOT(qs[0], qs[4]), MEASURE(qs[5], [5]))
+
+    with pytest.raises(RuntimeError) as e:
+        pq.out()
+    assert e.match(r'Qubit q\d+ has not been assigned an index')
+
+    string_version = str(pq)
+    should_be_re = (r'X \{q\d+\}\nCNOT \{q\d+\} \{q\d+\}\nMEASURE \{q\d+\} \[5\]\n')
+    assert re.fullmatch(should_be_re, string_version, flags=re.MULTILINE)
+
+
 def test_get_classical_addresses_from_program():
     p = Program([H(i) for i in range(4)])
     assert get_classical_addresses_from_program(p) == []
 
     p += [MEASURE(i, i) for i in [0, 3, 1]]
     assert get_classical_addresses_from_program(p) == [0, 1, 3]
+
+
+def test_get_classical_addresses_from_quil_program():
+    """
+    Tests that can get_classical_addresses_from_program can handle both MEASURE
+    quil instructions with and without explicit classical registers.
+    """
+
+    p = Program('\n'.join([
+        'X 0',
+        'MEASURE 0'
+    ]))
+    assert get_classical_addresses_from_program(p) == []
+
+    p = Program('\n'.join([
+        'X 0',
+        'MEASURE 0 [1]'
+    ]))
+    assert get_classical_addresses_from_program(p) == [1]
+
+
+def test_pragma_with_placeholders():
+    q = QubitPlaceholder()
+    q2 = QubitPlaceholder()
+    p = Program()
+    p.inst(Pragma('FENCE', [q, q2]))
+    address_map = {q: 0, q2: 1}
+    addressed_pragma = address_qubits(p, address_map)[0]
+    parse_equals('PRAGMA FENCE 0 1\n', addressed_pragma)
+
+    pq = Program(X(q))
+    pq.define_noisy_readout(q, .8, .9)
+
+    pq.inst(X(q2))
+    pq.define_noisy_readout(q2, .9, .8)
+
+    ret = address_qubits(pq, address_map).out()
+    assert ret == """X 0
+PRAGMA READOUT-POVM 0 "(0.8 0.09999999999999998 0.19999999999999996 0.9)"
+X 1
+PRAGMA READOUT-POVM 1 "(0.9 0.19999999999999996 0.09999999999999998 0.8)"
+"""

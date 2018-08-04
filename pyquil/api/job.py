@@ -17,6 +17,8 @@
 import base64
 import warnings
 
+import numpy as np
+
 from pyquil.api.errors import CancellationError, QVMError, QPUError, QUILCError, UnknownApiError
 from pyquil.parser import parse_program
 from pyquil.wavefunction import Wavefunction
@@ -75,6 +77,8 @@ class Job(object):
         if self._raw['program']['type'] == 'wavefunction':
             return Wavefunction.from_bit_packed_string(
                 base64.b64decode(self._raw['result']), self._raw['program']['addresses'])
+        elif self._raw['program']['type'] in ['multishot', 'multishot-measure', 'expectation']:
+            return np.asarray(self._raw['result'])
         else:
             return self._raw['result']
 
@@ -117,6 +121,34 @@ class Job(object):
         """
         if self.is_queued():
             return ROUND_TRIP_JOB_TIME * self.position_in_queue()
+
+    def running_time(self):
+        """
+        For how long was the job running?
+        :return: Running time, seconds
+        :rtype: Optional[float]
+        """
+        if not self.is_done():
+            raise ValueError("Cannot get running time for a program that isn't completed.")
+        try:
+            running_time = float(self._raw['running_time'].split()[0])
+        except (ValueError, KeyError, IndexError):
+            raise UnknownApiError(str(self._raw))
+        return running_time
+
+    def time_in_queue(self):
+        """
+        For how long was the job in the Forest queue?
+        :return: Time in queue, seconds
+        :rtype: Optional[float]
+        """
+        if not self.is_done():
+            raise ValueError("Cannot get time in queue for a program that isn't completed.")
+        try:
+            time_in_queue = float(self._raw['time_in_queue'].split()[0])
+        except (ValueError, KeyError, IndexError):
+            raise UnknownApiError(str(self._raw))
+        return time_in_queue
 
     def get(self):
         warnings.warn("""
@@ -173,6 +205,11 @@ class Job(object):
         prog = self._raw.get("program", {}).get("compiled-quil", None)
         if prog is not None:
             return parse_program(prog)
+        else:
+            # if we failed too early to even get a "compiled-quil" field,
+            # then alert the user to that problem instead
+            if self._raw['status'] == 'ERROR':
+                return self.result()
 
     def topological_swaps(self):
         """
